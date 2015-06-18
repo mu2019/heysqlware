@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 #!coding=utf-8
 
 '''
@@ -13,8 +13,8 @@
 ##     'DbWare','QueryValue','TableWare','ModuleWare'
 
 ##     ]
- 
-from sqlalchemy import create_engine,Column,null
+import sqlalchemy
+from sqlalchemy import create_engine,Column,null,event
 from sqlalchemy.orm import sessionmaker,query
 #from sqlalchemry.orm.session import Session as _Session
 from sqlalchemy.sql.expression import and_,or_,not_,_BinaryExpression
@@ -22,49 +22,109 @@ from sqlalchemy.orm.attributes import InstrumentedAttribute as iattr
 from sqlalchemy.ext.declarative import DeclarativeMeta
 from decimal import Decimal
 from .record import Record,RecordSet,QueryValue
-#from heyflow.utilitis.idebug import IDebug
-#write=IDebug.write
-#from heyflow.core import IConfig,rawImport
+from datetime import datetime
 
 try:
     from collections import OrderedDict
 except:
     from ordereddict import OrderedDict
+    
+#数据库已创建表，select * from pg_statio_user_tables
+
 
 SessionMaker=sessionmaker()
 
 _sql_rl=_sql_relate={'and':and_,'or':or_}
-_exp_where_op={'=':Column.__eq__,'>':Column.__gt__,'<':Column.__lt__,'>=':Column.__ge__,'!=':Column.__ne__,'<>':Column.__ne__,'like':Column.like,'not like':lambda *fvs:not_(Column.like(*fvs)),'in':Column.in_,'is':Column.__eq__,'is not':Column.__ne__,'<=':Column.__le__}
+_exp_where_op={'=':Column.__eq__,'>':Column.__gt__,'<':Column.__lt__,'>=':Column.__ge__,'!=':Column.__ne__,'<>':Column.__ne__,'like':Column.like,'not like':lambda *fvs:not_(Column.like(*fvs)),'in':Column.in_,'is':Column.__eq__,'is not':Column.__ne__,'<=':Column.__le__,'not is':Column.__ne__}
 
-_orm_where_op={'=':iattr.__eq__,'>':iattr.__gt__,'<':iattr.__lt__,'>=':iattr.__ge__,'!=':iattr.__ne__,'<>':iattr.__ne__,'like':iattr.like,'not like':lambda *fvs:not_(iattr.like(*fvs)),'in':iattr.in_,'is':iattr.__eq__,'is not':iattr.__ne__,'<=':iattr.__le__}
+_orm_where_op={'=':iattr.__eq__,'>':iattr.__gt__,'<':iattr.__lt__,'>=':iattr.__ge__,'!=':iattr.__ne__,'<>':iattr.__ne__,'like':iattr.like,'not like':lambda *fvs:not_(iattr.like(*fvs)),'in':iattr.in_,'is':iattr.__eq__,'is not':iattr.__ne__,'not is':iattr.__ne__,'<=':iattr.__le__}
 
 ENGINE_STRING='%(dialect)s+%(driver)s://%(user)s:%(password)s@%(host)s/%(dbname)s?%(paras)s'
 
 _n1='eq,ne,gt,ge,lt,le,nu,nn,in,ni'.split(',')
-_o1='=,<>,>,>=,<,<=,is null,not is null,in,not in'.split(',')
-_n2='bw,bn,ew,en,cn,nc'
-_o2='like,not like,like,not like,like,not like'
-_v2='%s%%,%s%%,%%%s,%%%s,%%%s%%,%%%s%%'
+_o1='=,<>,>,>=,<,<=,is null,not is null,is not null,in,not in'.split(',')
+_n2='bw,bn,ew,en,cn,nc'.split(',')
+_o2='like,not like,like,not like,like,not like'.split(',')
+_v2='%s%%,%s%%,%%%s,%%%s,%%%s%%,%%%s%%'.split(',')
 
 _op1=dict(zip(_n1,_o1))
 _op2=dict(zip(_n2,zip(_o2,_v2)))
 
 def sql_filter(field_filter):
+    '''
+    将字典类型的查询语句转为列表
+    '''
     if field_filter['op'] in _op1:
         return (field_filter['field'],_op1[field_filter['op']],field_filter['data'])
     elif field_filter['op'] in _op2:
         o=_op2[field_filter['op']]
         return (field_filter['field'],o[0],o[1] % field_filter['data'])
-    raise 'sql operator not support."%s"' % field_filter
+    elif field_filter['op'] in _o1:
+        return (field_filter['field'],field_filter['op'],field_filter['data'])
+    elif field_filter['op'] in _o2:
+        o=field_filter['op']
+        return (field_filter['field'],o,_v2[_o2.index(o)] % field_filter['data'])
+    raise Exception('sql operator not support."%s"' % field_filter['op'])
+    
+default_db={'mssql':'master','postgresql':'postgres'}
+
+db_exist_sql={'mssql':"select count(name) from master..sysdatabases where name ='%s';",
+              'postgresql':"select count(datname) from pg_stat_database where datname='%s'; "
+              
+              }
+table_exist_sql={'mssql':"select count(name) from sysobjects where xtype='U' and name='%s';",
+              'postgresql':"select count(relname) from pg_stat_user_tables where schemaname='public' and relname='%s'; "
+              }
+
 
 def filter2condition(filters):
-    return (filters['groupOp'].lower(),[sql_filter(f) for f in filters['rules']])
+    '''
+    字典类型的查询参数
+    filters:{'groupOp':'and','rules':[{'op':'>','field':'MOCTA.TA001','data':'2201'}]}
+    '''
+    rules=[]
+    for i,f in enumerate(filters.get('rules',[])):
+        if 'groupOp' in f:
+            rules.append(filter2condition(f))
+        else:
+            rules.append(sql_filter(f))
+    
+    return (filters['groupOp'].lower(),rules) if filters else []#[sql_filter(f) for f in filters['rules']]) if filters else []
+
+
+# class ExceptListener(sqlalchemy.interfaces.PoolListener):
+#     def __init__(self,engine_name,retry_times=3,retry_interval=5,retry_fun=None):
+#         '''鏈接關閉後將嘗試會重新鏈接
+#         @engine_name:鏈接使用的engine名稱
+#         @retry_times:連續最大重試次數
+#         @retry_interval:兩次連續重試間隔分鐘數
+#         '''
+#         self.EngineName=engine_name
+#         self.retried = False
+#         self.MaxTryTimes=retry_times
+#         self.RetryTimes=0
+#         self.LastTryTime=datetime.now()
+#         self.RetryInterval=retry_interval
+#         self.RetryFun=retry_fun
+
+#     def checkout(self, dbapi_con, con_record, con_proxy):
+#         print('--ExceptionListener Checkout--: is closed ',dbapi_con.closed)
+#         if dbapi_con.closed:
+#             if self.RetryTimes<self.MaxTryTimes:
+#                 self.RetryTimes+=1
+#                 self.RetryFun and self.RetryFun()
+#             elif int((datetime.now()-self.LastTryTime).seconds/60)<self.RetryInterval:
+                
+                
+
 
 class DbWareMeta(type):
     '''
     保存全局鏈接設置
     _config,保存可鏈接的服務器及鏈接選項
     _Engine,默認數據庫引擎,等於_Engines.values[0],_Engines['Default_Engine']
+            print('*'*8,r)
+            print('*'*8,r)
     _Engines,保存數據庫鏈接引擎
     
     '''
@@ -104,31 +164,97 @@ class DbWare(object, metaclass=DbWareMeta):
         tables[0].metadata.create_all()
 
     @staticmethod
-    def createEngine(engine_name,engine_paras):
+    def createDatabase(dbname,engine_name,paras={}):
+        '''
+        創建數據庫
+        @dbname:數據庫名稱
+        @engine_name:數據庫鏈接別名
+        @paras:其它參數
+        '''
+        en=DbWareMeta._Engines[engine_name]
+        if en.dialect.name=='mssql':
+            collation=" collation %s " % paras['collation'] if 'collation' in paras else ''
+            en.execute("create database %s %s ;" % (dbname,collation))
+        if en.dialect.name=='postgresql':
+            con=en.connect()
+            con.connection.set_isolation_level(0)
+            encoding=" with encoding \'%s\' " % paras['encoding'] if 'encoding' in paras else ''
+            con.execute('create database "%s" %s ;' % (dbname,encoding))
+            con.connection.set_isolation_level(1)
+        elif en.dialect.name=='mysql':
+            encoding=" character set%s " % paras['encoding'] if 'encoding' in paras else ''
+            en.execute("create database %s %s;" % (dbname,encoding))
+
+
+    @staticmethod
+    def is_db_exist(dbname,engine_name):
+        '''
+        數據服務器中是否存在數據庫
+        @dbname:查詢的數據庫名稱
+        @engine_nane:數據庫鏈接別名
+            數據庫爲postgresql時鏈接必須是指向postres庫
+        '''
+        en=DbWareMeta._Engines[engine_name]
+        return en.execute(db_exist_sql[en.dialect.name] % dbname).first()[0]>0
+
+    @staticmethod
+    def is_table_exist(tablename,engine_name):
+        '''
+        數據庫中是否存在指定的數據表
+        @tablename:指定的數據表
+        @engine_name:數據庫鏈接別名
+        '''
+        en=DbWareMeta._Engines[engine_name]
+        return en.execute(table_exist_sql[en.dialect.name] % tablename).first()[0]>0
+        
+    @staticmethod
+    def reconnect4Closed(dbapi_connection, connection_record):
+        #print('---engine event--- connection is closed:',dir(dbapi_connection))#.closed!=0)
+        pass
+
+
+    @staticmethod
+    def createEngine(engine_name,engine_paras,options={}):
         en=DbWareMeta._Engines.get(engine_name)
+        dialect=engine_paras['dialect']
         if en:
             return en
-        if engine_paras['dialect']=='sqlite':
+        if dialect=='sqlite':
             ens="sqlite://%s" % engine_paras.get('dbname','')
             args={}
         else:
-            hst=engine_paras
-            args={'pool_size':hst.get('pool_size',10),
-                  'max_overflow':hst.get('max_overflow',40)}
+            hst=dict(engine_paras)
+            hst.setdefault('dbname',default_db[dialect])
             ens=ENGINE_STRING % hst
-        en=create_engine(ens,**args)
+        options.update(engine_paras.get('options',{}))
+        # options['listeners']=[ExceptListener(engine_name,retry_fun)]
+        en=create_engine(ens,**options)
+        event.listen(en,'checkin',DbWare.reconnect4Closed)
+        #print('engine',en)
         DbWareMeta._Engines[engine_name]=en
+        # if en.dialect.name=='postgresql':
+        #     if en.driver=='psycopg2':
+        #         from psycopg2 import extras
+        #         try:
+        #             extras.register_hstore(en.raw_connection(), True)
+        #         except:
+        #             pass
+
         return en
 
     @staticmethod
     def session(engine_name):
-        en=DbWareMeta._Engines[engine_name]
-        return SessionMaker(bind=en)
+        en=DbWareMeta._Engines.get(engine_name,None)
+        return en and SessionMaker(bind=en) or None
 
+is_db_exist=DbWare.is_db_exist
+is_table_exist=DbWare.is_table_exist
 get_session=DbWare.session
+db_session=DbWare.session
 get_engine=DbWare.getEngine
 get_engines=DbWare.engines
 create_engines=DbWare.createEngine
+create_database=DbWare.createDatabase
 
 
 class TableWare(object):
@@ -178,10 +304,14 @@ class TableWare(object):
         '''
         pass
 
-    def getFieldMapper(self,fields=()):
+    def getFieldMapper(self,fields=[]):
         '''
         將指定的字段統一轉化為InstrumentedAttribute對象
         '''
+        while '' in fields:
+            fields.remove('')
+        #while None in fields:
+            #fields.remove(None)
         flds=OrderedDict()
         for c in fields:
             if isinstance(c,str):
@@ -202,6 +332,7 @@ class TableWare(object):
             flds['%s.%s' % (t.__tablename__,c)]=t.__dict__[c]
         return flds
 
+
     def _genColumnMapper(self,joinmappers=[]):
         flds=OrderedDict()
         tn=self._Table_.__tablename__
@@ -213,6 +344,7 @@ class TableWare(object):
             for c in list(t.__table__.c.keys()):
                 flds['%s.%s' % (t.__tablename__,c)]=t.__dict__[c]
         return flds
+
 
     def getColumnMapper(self,columns=None):
         cc=[]
@@ -234,6 +366,10 @@ class TableWare(object):
         return r
 
     def getOrderBy(self,order_by):
+        '''
+        排序
+        order_by;[字段 DESC/ASC,]
+        '''
         fns=[]
         desc=[]
         flds=[]
@@ -261,7 +397,7 @@ class TableWare(object):
         return self
 
     def __getitem__(self,index):
-        
+        #print('heysqlware 397:',self._Values,dir(self._Values))
         if isinstance(index,slice):
             return self.__getslice__(index.start,index.stop)
         if index==self._Values.count():
@@ -274,11 +410,14 @@ class TableWare(object):
         
     def __getslice__(self,start,end):
         rr=self._Values[start:end]
-        fs=self._queryFields.keys()
+        fs=list(self._queryFields.keys())
         return RecordSet(rr,fs)
         #return [Record(r,fs) for r in rr]
         #return [QueryValue(self._queryFields,r,self._Table_.__tablename__) for r in rr]
 
+    def getslice(self,start,end):
+        return self.__getslice__(start,end)
+        
     def __len__(self):
         return self._ValuesCount# if self._Values else 0
             
@@ -292,9 +431,11 @@ class TableWare(object):
             self._RecNo=0
             raise StopIteration
         else:
-            r=self._Values[self._RecNo]
+            #print('heysqlware next 431',self._RecNo)
+            r=self[self._RecNo]#]._Values[self._RecNo]
             self._RecNo+=1
-            return Record(r,fs)
+            return r#self[Record(r,fs)
+
 
     def last(self):
         fs=list(self._queryFields.keys())
@@ -329,45 +470,93 @@ class TableWare(object):
     def addColumn(self,column):
         self._AddColumns.append(column)
 
-    def delete(self,condition=[]):
+    def delete(self,keys=[],condition=[]):
+        '''刪除記錄
+        @keys:主鍵值列表,刪除指定的記錄
+        @condition:刪除條件,['and'/'or',[('field_name','op',value),...]]
+            條件中的字段"field_name"需要指定數據表名前綴,如COPMG.MG001
+        '''
+        pk=self.getPrimaryKeyMapper()
+        klen=min(len(pk),len(keys))
+        ks=zip(pk[:klen],keys[:klen])
+        cnd=('and',[(k,'=',v) for k,v in ks]) if keys else []
+        condition=cnd if cnd else condition
         rr= self._Session.query(self._Table_).filter(self.where(condition))
+        print('heysqlware delete',rr,cnd)
         if rr.count()>0:
-            rr=rr.delete()
+            rr=rr.delete('fetch')
         else:
             rr=0
         return rr
 
-    def insert(self,*args,**kws):
+    def get(self,*keys):
         '''
-        插入数据
+        使用主鍵值獲取相應記錄
+        @keys:主鍵值列表
+        '''
+        pk=self.getPrimaryKeyMapper()
+        klen=min(len(pk),len(keys))
+        ks=zip(pk[:klen],keys[:klen])
+        cnd=('and',[(k,'=',v) for k,v in ks]) if keys else []
+        r=self._Session.query(self._Table_).filter(self.where(cnd))
+        fs=list(self._SelectedField)
+        r=list(r[0]) if r.count() else None
+        return Record(r,fs)
+        
+    def set(self,*keys,**kws):
+        '''
+        更新指定
+        '''
+
+    def insert(self,*args,**kws):
+        '''插入数据
+        
         @args,list:按字段顺序设置相应的值
         @kws,dict:按字段名称设置对应的值
         '''
-        t=self._Table_(*args,**kws)
+        d={}
+        for k in kws:
+            d[k.split('.')[-1]]=kws[k]
+        t=self._Table_(*args,**d)
         self._Session.add(t)
 
     def update(self,condition=[],*args,**kws):
-        '''
-        condition,條件
-        條件中的字段需要指定數據表名前綴,如COPMG.MG001
+        '''更新指定條件記錄
+
+        @condition:條件,['and'/'or',[('field_name','op',value),...]]
+            條件中的字段"field_name"需要指定數據表名前綴,如COPMG.MG001
+        @args:按數據表字段順序傳入字段值
+        @kws:字典形式傳入更新內容
         '''
         rr= self._Session.query(self._Table_)
         w=self.where(condition)
         rr=rr.filter(w)
+        fields=list(self._TableFields.keys())
         for r in rr:
             if 'kws' in kws:
                 kws=kws['kws']
             for i,a in enumerate(args):
-                r[self._FieldList[i].name]=a
+                r[self._TableFields[i].name]=a
             for k,v in list(kws.items()):
+                k=k.split('.')
+                if len(k)>1:
+                    if k[0]==self._Table_.__tablename__:
+                        k=k[1]
+                    else:
+                        continue
+                else:
+                    k=k[0]
                 r[k]=v
-        
+
     def select(self,condition=[],limit=None,order_by=[],fields=()):
         '''
-        condition,條件,['and'/'or',[('field name','op',value),...]]
-        limit,返回記錄數量
-        order_by,排序字段
-        fields,返回的字段
+        @condition,查询條件,['and'/'or',[('field name','op',value),...]]
+             字典方式表達
+             {'groupOp':'and','rules':[{'op':'>','field':'MOCTA.TA001','data':'2201'}]}
+             但會使用filter2condition轉換為['and'/'or',[('field name','op',value),...]]形式
+        @limit,返回記錄數量
+        @order_by:排序字段
+        @fields:列表,返回的字段
         '''
         if isinstance(condition,dict):
             condition=filter2condition(condition)
@@ -385,8 +574,8 @@ class TableWare(object):
         qr.add_columns(*self._AddColumns)
         orderby=self.getOrderBy(order_by) if order_by else self._OrderBy_
         self._queryFields=fields
-        w=self.where(condition)
-        self._Values= qr.filter(self.where(condition)).order_by(*orderby)
+        #w=self.where(condition)
+        self._Values=  qr.filter(self.where(condition)).order_by(*orderby) if condition else qr.order_by(*orderby)
         self._RecNo=0
         self._ValuesCount=self._Values.count()
         return self._Values
@@ -396,8 +585,9 @@ class TableWare(object):
         返回单个条件表达
         clause,[字段名称,操作符,值]
         '''
-        c=self._AllFields.get(clause[0])
-        assert clause[0] in self._AllFields,'the field "%s" not in field list.' % clause[0]
+        col=clause[0] if isinstance(clause[0],str) else str(clause[0])
+        assert col in self._AllFields,'the field "%s" not in field list.' % col
+        c=self._AllFields.get(col)
         if isinstance(c,Column):
             op=_exp_where_op.get(clause[1])
         else:
@@ -420,6 +610,7 @@ class TableWare(object):
             raise Exception("sql where clause list  must start with 'and' or 'or'")
         wl=[]
         for c in clauses[1]:
+            c=list(c)
             if c[0] in _sql_rl:
                 wl.append(self.where(c))
             elif isinstance(c,_BinaryExpression):
@@ -428,8 +619,6 @@ class TableWare(object):
                 if c[2]=='null':
                     c[2]=null()
                 wl.append(self.clause(c))
-            ## elif len(c)==2 and c[0] in _sql_rl:
-            ##     return self.where(c)
             else:
                 raise Exception("sql clause error,%s" % (clauses))
         return rl(*wl)
